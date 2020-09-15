@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -129,11 +130,12 @@ func IsAccessible(name string) error {
 // FilesExist returns true if all files exist in dir.
 // Files are assumed to be relative names in slash notation.
 func FilesExist(dir string, files map[string]bool) bool {
-	for f, required := range files {
+	for pattern, required := range files {
 		if !required {
 			continue
 		}
-		if !IsExist(filepath.Join(dir, filepath.FromSlash(f))) {
+		files, err := filepath.Glob(filepath.Join(dir, filepath.FromSlash(pattern)))
+		if err != nil || len(files) == 0 {
 			return false
 		}
 	}
@@ -141,7 +143,7 @@ func FilesExist(dir string, files map[string]bool) bool {
 }
 
 // CopyFiles copies files from srcDir to dstDir as atomically as possible.
-// Files are assumed to be relative names in slash notation.
+// Files are assumed to be relative glob patterns in slash notation in srcDir.
 // All other files in dstDir are removed.
 func CopyFiles(srcDir, dstDir string, files map[string]bool) error {
 	// Linux does not support atomic dir replace, so we copy to tmp dir first.
@@ -153,23 +155,43 @@ func CopyFiles(srcDir, dstDir string, files map[string]bool) error {
 	if err := MkdirAll(tmpDir); err != nil {
 		return err
 	}
-	for f, required := range files {
-		src := filepath.Join(srcDir, filepath.FromSlash(f))
-		if !required && !IsExist(src) {
-			continue
-		}
-		dst := filepath.Join(tmpDir, filepath.FromSlash(f))
-		if err := MkdirAll(filepath.Dir(dst)); err != nil {
-			return err
-		}
-		if err := CopyFile(src, dst); err != nil {
-			return err
-		}
+	if err := foreachPatternFile(srcDir, tmpDir, files, CopyFile); err != nil {
+		return err
 	}
 	if err := os.RemoveAll(dstDir); err != nil {
 		return err
 	}
 	return os.Rename(tmpDir, dstDir)
+}
+
+func foreachPatternFile(srcDir, dstDir string, files map[string]bool, fn func(src, dst string) error) error {
+	srcDir = filepath.Clean(srcDir)
+	dstDir = filepath.Clean(dstDir)
+	for pattern, required := range files {
+		files, err := filepath.Glob(filepath.Join(srcDir, filepath.FromSlash(pattern)))
+		if err != nil {
+			return err
+		}
+		if len(files) == 0 {
+			if !required {
+				continue
+			}
+			return fmt.Errorf("file %v does not exist", pattern)
+		}
+		for _, file := range files {
+			if !strings.HasPrefix(file, srcDir) {
+				return fmt.Errorf("file %q matched from %q in %q doesn't have src prefix", file, pattern, srcDir)
+			}
+			dst := filepath.Join(dstDir, strings.TrimPrefix(file, srcDir))
+			if err := MkdirAll(filepath.Dir(dst)); err != nil {
+				return err
+			}
+			if err := fn(file, dst); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func CopyDirRecursively(srcDir, dstDir string) error {
@@ -206,20 +228,7 @@ func LinkFiles(srcDir, dstDir string, files map[string]bool) error {
 	if err := MkdirAll(dstDir); err != nil {
 		return err
 	}
-	for f, required := range files {
-		src := filepath.Join(srcDir, filepath.FromSlash(f))
-		if !required && !IsExist(src) {
-			continue
-		}
-		dst := filepath.Join(dstDir, filepath.FromSlash(f))
-		if err := MkdirAll(filepath.Dir(dst)); err != nil {
-			return err
-		}
-		if err := os.Link(src, dst); err != nil {
-			return err
-		}
-	}
-	return nil
+	return foreachPatternFile(srcDir, dstDir, files, os.Link)
 }
 
 func MkdirAll(dir string) error {

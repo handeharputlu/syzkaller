@@ -58,7 +58,7 @@ if [ ! -e $1/sbin/init ]; then
 fi
 
 case "$IMG_ARCH" in
-	386|amd64)
+	386|amd64|s390x)
 		KERNEL_IMAGE_BASENAME=bzImage
 		;;
 	ppc64le)
@@ -114,7 +114,7 @@ elif [ "$BLOCK_DEVICE" == "nbd" ]; then
 fi
 
 case "$IMG_ARCH" in
-	386|amd64)
+	386|amd64|s390x)
 		echo -en "o\nn\np\n1\n\n\na\nw\n" | sudo fdisk $DISKDEV
 		PARTDEV=$DISKDEV"p1"
 		;;
@@ -148,6 +148,9 @@ done
 # Add udev rules for custom drivers.
 # Create a /dev/vim2m symlink for the device managed by the vim2m driver
 echo 'ATTR{name}=="vim2m", SYMLINK+="vim2m"' | sudo tee -a disk.mnt/etc/udev/rules.d/50-udev-default.rules
+
+# Create a /dev/i915 symlink to /dev/dri/card# if i915 driver is in use.
+echo 'SUBSYSTEMS=="pci", DRIVERS=="i915", SYMLINK+="i915"' | sudo tee -a disk.mnt/etc/udev/rules.d/60-drm.rules
 
 # sysctls
 echo "kernel.printk = 7 4 1 3" | sudo tee -a disk.mnt/etc/sysctl.conf
@@ -216,5 +219,10 @@ menuentry 'linux' --class gnu-linux --class gnu --class os {
 }
 EOF
 	sudo grub-install --target=powerpc-ieee1275 --boot-directory=disk.mnt/boot $DISKDEV"p1"
+	;;
+s390x)
+	sudo zipl -V -t disk.mnt/boot -i disk.mnt/vmlinuz \
+	     -P "root=/dev/vda1 console=ttyS0 earlyprintk=serial rodata=n oops=panic panic_on_warn=1 nmi_watchdog=panic panic=86400 net.ifnames=0 sysctl.kernel.hung_task_all_cpu_backtrace=1 net.ifnames=0 biosdevname=0 $CMDLINE" \
+	     --targetbase=$DISKDEV --targettype=SCSI --targetblocksize=512 --targetoffset=2048
 	;;
 esac

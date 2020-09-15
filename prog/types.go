@@ -68,6 +68,15 @@ func (dir Dir) String() string {
 type Field struct {
 	Name string
 	Type
+	HasDirection bool
+	Direction    Dir
+}
+
+func (f *Field) Dir(def Dir) Dir {
+	if f.HasDirection {
+		return f.Direction
+	}
+	return def
 }
 
 type BinaryFormat int
@@ -88,6 +97,7 @@ type Type interface {
 	Varlen() bool
 	Size() uint64
 	TypeBitSize() uint64
+	Alignment() uint64
 	Format() BinaryFormat
 	BitfieldOffset() uint64
 	BitfieldLength() uint64
@@ -118,6 +128,7 @@ func (ti Ref) Optional() bool                                        { panic("pr
 func (ti Ref) Varlen() bool                                          { panic("prog.Ref method called") }
 func (ti Ref) Size() uint64                                          { panic("prog.Ref method called") }
 func (ti Ref) TypeBitSize() uint64                                   { panic("prog.Ref method called") }
+func (ti Ref) Alignment() uint64                                     { panic("prog.Ref method called") }
 func (ti Ref) Format() BinaryFormat                                  { panic("prog.Ref method called") }
 func (ti Ref) BitfieldOffset() uint64                                { panic("prog.Ref method called") }
 func (ti Ref) BitfieldLength() uint64                                { panic("prog.Ref method called") }
@@ -151,6 +162,7 @@ type TypeCommon struct {
 	TypeName string
 	// Static size of the type, or 0 for variable size types and all but last bitfields in the group.
 	TypeSize   uint64
+	TypeAlign  uint64
 	IsOptional bool
 	IsVarlen   bool
 
@@ -221,6 +233,10 @@ func (t *TypeCommon) ref() Ref {
 
 func (t *TypeCommon) setRef(ref Ref) {
 	t.self = ref
+}
+
+func (t *TypeCommon) Alignment() uint64 {
+	return t.TypeAlign
 }
 
 type ResourceDesc struct {
@@ -607,7 +623,7 @@ func (t *StructType) String() string {
 func (t *StructType) DefaultArg(dir Dir) Arg {
 	inner := make([]Arg, len(t.Fields))
 	for i, field := range t.Fields {
-		inner[i] = field.DefaultArg(dir)
+		inner[i] = field.DefaultArg(field.Dir(dir))
 	}
 	return MakeGroupArg(t, dir, inner)
 }
@@ -632,7 +648,8 @@ func (t *UnionType) String() string {
 }
 
 func (t *UnionType) DefaultArg(dir Dir) Arg {
-	return MakeUnionArg(t, dir, t.Fields[0].DefaultArg(dir), 0)
+	f := t.Fields[0]
+	return MakeUnionArg(t, dir, f.DefaultArg(f.Dir(dir)), 0)
 }
 
 func (t *UnionType) isDefaultArg(arg Arg) bool {
@@ -687,16 +704,16 @@ func foreachTypeImpl(meta *Syscall, preorder bool, f func(t Type, ctx TypeCtx)) 
 				break // prune recursion via pointers to structs/unions
 			}
 			seen[a] = true
-			for i := range a.Fields {
-				rec(&a.Fields[i].Type, dir)
+			for i, f := range a.Fields {
+				rec(&a.Fields[i].Type, f.Dir(dir))
 			}
 		case *UnionType:
 			if seen[a] {
 				break // prune recursion via pointers to structs/unions
 			}
 			seen[a] = true
-			for i := range a.Fields {
-				rec(&a.Fields[i].Type, dir)
+			for i, f := range a.Fields {
+				rec(&a.Fields[i].Type, f.Dir(dir))
 			}
 		case *ResourceType, *BufferType, *VmaType, *LenType, *FlagsType,
 			*ConstType, *IntType, *ProcType, *CsumType:

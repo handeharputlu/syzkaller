@@ -2,6 +2,25 @@
 // Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
 // Package csource generates [almost] equivalent C programs from syzkaller programs.
+//
+// Outline of the process:
+// - inputs to the generation are the program and options
+// - options control multiple aspects of the resulting C program,
+//   like if we want a multi-threaded program or a single-threaded,
+//   what type of sandbox we want to use, if we want to setup net devices or not, etc
+// - we use actual executor sources as the base
+// - gen.go takes all executor/common*.h headers and bundles them into generated.go
+// - during generation we tear executor headers apart and take only the bits
+//   we need for the current program/options, this is done by running C preprocessor
+//   with particular set of defines so that the preprocessor removes unneeded
+//   #ifdef SYZ_FOO sections
+// - then we generate actual syscall calls with the given arguments
+//   based on the binary "encodingexec" representation of the program
+//   (the same representation executor uses for interpretation)
+// - then we glue it all together
+// - as the last step we run some text post-processing on the resulting source code:
+//   remove debug calls, replace exitf/fail with exit, hoist/sort/dedup includes,
+//   remove duplicate empty lines, etc
 package csource
 
 import (
@@ -15,6 +34,7 @@ import (
 	"github.com/google/syzkaller/sys/targets"
 )
 
+// Write generates C source for program p based on the provided options opt.
 func Write(p *prog.Prog, opts Options) ([]byte, error) {
 	if err := opts.Check(p.Target.OS); err != nil {
 		return nil, fmt.Errorf("csource: invalid opts: %v", err)
@@ -187,9 +207,10 @@ func (ctx *context) generateCalls(p prog.ExecProg, trace bool) ([]string, []uint
 		callName := call.Meta.CallName
 		resCopyout := call.Index != prog.ExecNoCopyout
 		argCopyout := len(call.Copyout) != 0
-		emitCall := ctx.opts.NetInjection ||
+		emitCall := (ctx.opts.NetInjection ||
 			callName != "syz_emit_ethernet" &&
-				callName != "syz_extract_tcp_res"
+				callName != "syz_extract_tcp_res") &&
+			(ctx.opts.VhciInjection || callName != "syz_emit_vhci")
 		// TODO: if we don't emit the call we must also not emit copyin, copyout and fault injection.
 		// However, simply skipping whole iteration breaks tests due to unused static functions.
 		if emitCall {
@@ -212,10 +233,58 @@ func (ctx *context) emitCall(w *bytes.Buffer, call prog.ExecCall, ci int, haveCo
 	_, trampoline := ctx.sysTarget.SyscallTrampolines[callName]
 	native := ctx.sysTarget.SyscallNumbers && !strings.HasPrefix(callName, "syz_") && !trampoline
 	fmt.Fprintf(w, "\t")
+	if !native {
+		// This mimics the same as executor does for execute_syscall,
+		// but only for non-native syscalls to reduce clutter (native syscalls are assumed to not crash).
+		// Arrange for res = -1 in case of syscall abort, we care about errno only if we are tracing for pkg/runtest.
+		if haveCopyout || trace {
+			fmt.Fprintf(w, "res = -1;\n\t")
+		}
+		if trace {
+			fmt.Fprintf(w, "errno = EFAULT;\n\t")
+		}
+		fmt.Fprintf(w, "NONFAILING(")
+	}
 	if haveCopyout || trace {
 		fmt.Fprintf(w, "res = ")
 	}
-	ctx.emitCallName(w, call, native)
+	ctx.emitCallBody(w, call, native)
+	if !native {
+		fmt.Fprintf(w, ")") // close NONFAILING macro
+	}
+	fmt.Fprintf(w, ");")
+	comment := ctx.target.AnnotateCall(call)
+	if comment != "" {
+		fmt.Fprintf(w, " /* %s */", comment)
+	}
+	fmt.Fprintf(w, "\n")
+	if trace {
+		cast := ""
+		if !native && !strings.HasPrefix(callName, "syz_") {
+			// Potentially we casted a function returning int to a function returning intptr_t.
+			// So instead of intptr_t -1 we can get 0x00000000ffffffff. Sign extend it to intptr_t.
+			cast = "(intptr_t)(int)"
+		}
+		fmt.Fprintf(w, "\tfprintf(stderr, \"### call=%v errno=%%u\\n\", %vres == -1 ? errno : 0);\n", ci, cast)
+	}
+}
+
+func (ctx *context) emitCallBody(w *bytes.Buffer, call prog.ExecCall, native bool) {
+	callName, ok := ctx.sysTarget.SyscallTrampolines[call.Meta.CallName]
+	if !ok {
+		callName = call.Meta.CallName
+	}
+	if native {
+		fmt.Fprintf(w, "syscall(%v%v", ctx.sysTarget.SyscallPrefix, callName)
+	} else if strings.HasPrefix(callName, "syz_") {
+		fmt.Fprintf(w, "%v(", callName)
+	} else {
+		args := strings.Repeat(",intptr_t", len(call.Args))
+		if args != "" {
+			args = args[1:]
+		}
+		fmt.Fprintf(w, "((intptr_t(*)(%v))CAST(%v))(", args, callName)
+	}
 	for ai, arg := range call.Args {
 		if native || ai > 0 {
 			fmt.Fprintf(w, ", ")
@@ -246,39 +315,6 @@ func (ctx *context) emitCall(w *bytes.Buffer, call prog.ExecCall, ci int, haveCo
 			fmt.Fprintf(w, ", ")
 		}
 		fmt.Fprintf(w, "0")
-	}
-	fmt.Fprintf(w, ");")
-	comment := ctx.target.AnnotateCall(call)
-	if comment != "" {
-		fmt.Fprintf(w, " /* %s */", comment)
-	}
-	fmt.Fprintf(w, "\n")
-	if trace {
-		cast := ""
-		if !native && !strings.HasPrefix(callName, "syz_") {
-			// Potentially we casted a function returning int to a function returning intptr_t.
-			// So instead of intptr_t -1 we can get 0x00000000ffffffff. Sign extend it to intptr_t.
-			cast = "(intptr_t)(int)"
-		}
-		fmt.Fprintf(w, "\tfprintf(stderr, \"### call=%v errno=%%u\\n\", %vres == -1 ? errno : 0);\n", ci, cast)
-	}
-}
-
-func (ctx *context) emitCallName(w *bytes.Buffer, call prog.ExecCall, native bool) {
-	callName, ok := ctx.sysTarget.SyscallTrampolines[call.Meta.CallName]
-	if !ok {
-		callName = call.Meta.CallName
-	}
-	if native {
-		fmt.Fprintf(w, "syscall(%v%v", ctx.sysTarget.SyscallPrefix, callName)
-	} else if strings.HasPrefix(callName, "syz_") {
-		fmt.Fprintf(w, "%v(", callName)
-	} else {
-		args := strings.Repeat(",intptr_t", len(call.Args))
-		if args != "" {
-			args = args[1:]
-		}
-		fmt.Fprintf(w, "((intptr_t(*)(%v))CAST(%v))(", args, callName)
 	}
 }
 

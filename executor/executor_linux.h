@@ -50,6 +50,8 @@ typedef char kcov_remote_arg64_size[sizeof(kcov_remote_arg64) == 24 ? 1 : -1];
 #define KCOV_SUBSYSTEM_MASK (0xffull << 56)
 #define KCOV_INSTANCE_MASK (0xffffffffull)
 
+static bool is_gvisor;
+
 static inline __u64 kcov_remote_handle(__u64 subsys, __u64 inst)
 {
 	if (subsys & ~KCOV_SUBSYSTEM_MASK || inst & ~KCOV_INSTANCE_MASK)
@@ -58,11 +60,13 @@ static inline __u64 kcov_remote_handle(__u64 subsys, __u64 inst)
 }
 
 static bool detect_kernel_bitness();
+static bool detect_gvisor();
 
 static void os_init(int argc, char** argv, char* data, size_t data_size)
 {
 	prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0);
 	is_kernel_64_bit = detect_kernel_bitness();
+	is_gvisor = detect_gvisor();
 	// Surround the main data mapping with PROT_NONE pages to make virtual address layout more consistent
 	// across different configurations (static/non-static build) and C repros.
 	// One observed case before: executor had a mapping above the data mapping (output region),
@@ -91,11 +95,50 @@ static intptr_t execute_syscall(const call_t* c, intptr_t a[kMaxArgs])
 	return res;
 }
 
+static void dump_dir(const char* path)
+{
+	DIR* dir = opendir(path);
+	struct dirent* d = NULL;
+	if (!dir)
+		return;
+	fprintf(stderr, "Index of %s\n", path);
+	while ((d = readdir(dir)) != NULL)
+		fprintf(stderr, "  %s\n", d->d_name);
+	closedir(dir);
+}
+
 static void cover_open(cover_t* cov, bool extra)
 {
 	int fd = open("/sys/kernel/debug/kcov", O_RDWR);
-	if (fd == -1)
+	if (fd == -1) {
+		const int err = errno;
+		dump_dir("/");
+		dump_dir("/proc/");
+		dump_dir("/sys/");
+		if (mount("/proc/", "/proc/", "proc", 0, NULL))
+			fprintf(stderr, "Can't mount proc on /proc/\n");
+		if (chdir("/sys/"))
+			fprintf(stderr, "/sys/ does not exist.\n");
+		else if (chdir("/sys/kernel/"))
+			fprintf(stderr, "/sys/kernel/ does not exist.\n");
+		else if (chdir("/sys/kernel/debug/"))
+			fprintf(stderr, "/sys/kernel/debug/ does not exist.\n");
+		fd = open("/proc/mounts", O_RDONLY);
+		if (fd == -1) {
+			fprintf(stderr, "open of /proc/mounts failed.\n");
+			if (chdir("/proc/"))
+				fprintf(stderr, "/proc/ does not exist.\n");
+		} else {
+			static char buffer[4096];
+			int len;
+			fprintf(stderr, "Content of /proc/mounts\n");
+			while ((len = read(fd, buffer, sizeof(buffer))) > 0)
+				fwrite(buffer, 1, len, stderr);
+			close(fd);
+		}
+		errno = err;
 		fail("open of /sys/kernel/debug/kcov failed");
+	}
 	if (dup2(fd, cov->fd) < 0)
 		fail("filed to dup2(%d, %d) cover fd", fd, cov->fd);
 	close(fd);
@@ -182,7 +225,7 @@ static bool cover_check(uint64 pc)
 {
 #if defined(__i386__) || defined(__x86_64__)
 	// Text/modules range for x86_64.
-	return pc >= 0xffffffff80000000ull && pc < 0xffffffffff000000ull;
+	return is_gvisor || (pc >= 0xffffffff80000000ull && pc < 0xffffffffff000000ull);
 #else
 	return true;
 #endif
@@ -208,6 +251,15 @@ static bool detect_kernel_bitness()
 	}
 	debug("detected %d-bit kernel\n", wide ? 64 : 32);
 	return wide;
+}
+
+static bool detect_gvisor()
+{
+	char buf[64] = {};
+	// 3 stands for undeclared SYSLOG_ACTION_READ_ALL.
+	syscall(__NR_syslog, 3, buf, sizeof(buf) - 1);
+	// This is a first line of gvisor dmesg.
+	return strstr(buf, "Starting gVisor");
 }
 
 // One does not simply exit.

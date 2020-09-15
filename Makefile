@@ -94,7 +94,7 @@ ifeq ("$(TARGETOS)", "trusty")
 	TARGETGOARCH := $(HOSTARCH)
 endif
 
-.PHONY: all host target \
+.PHONY: all clean host target \
 	manager runtest fuzzer executor \
 	ci hub \
 	execprog mutate prog2c trace2syz stress repro upgrade db \
@@ -102,15 +102,8 @@ endif
 	bin/syz-extract bin/syz-fmt \
 	extract generate generate_go generate_sys \
 	format format_go format_cpp format_sys \
-	tidy test test_race check_copyright check_language check_links check_diff \
-	arch arch_darwin_amd64_host arch_linux_amd64_host \
-	arch_freebsd_amd64_host arch_netbsd_amd64_host \
-	arch_linux_amd64_target arch_linux_386_target \
-	arch_linux_arm64_target arch_linux_arm_target arch_linux_ppc64le_target arch_linux_mips64le_target \
-	arch_linux_s390x_target arch_linux_riscv64_target arch_freebsd_amd64_target arch_freebsd_386_target \
-	arch_netbsd_amd64_target arch_windows_amd64_target \
-	arch_akaros_target arch_fuchsia_target \
-	arch_test presubmit presubmit_parallel clean
+	tidy test test_race check_copyright check_language check_whitespace check_links check_diff check_commits \
+	presubmit presubmit_smoke presubmit_build presubmit_arch presubmit_big presubmit_race presubmit_old
 
 all: host target
 host: manager runtest repro mutate prog2c db upgrade
@@ -253,10 +246,11 @@ format_sys: bin/syz-fmt
 bin/syz-fmt:
 	$(HOSTGO) build $(GOHOSTFLAGS) -o $@ ./tools/syz-fmt
 
-tidy:
-	# A single check is enabled for now. But it's always fixable and proved to be useful.
-	clang-tidy -quiet -header-filter=.* -checks=-*,misc-definitions-in-headers -warnings-as-errors=* \
+tidy: descriptions
+	clang-tidy -quiet -header-filter=.* -warnings-as-errors=* \
+		-checks=-*,misc-definitions-in-headers,bugprone-macro-parentheses,clang-analyzer-*,-clang-analyzer-security.insecureAPI*,-clang-analyzer-optin.performance* \
 		-extra-arg=-DGOOS_$(TARGETOS)=1 -extra-arg=-DGOARCH_$(TARGETARCH)=1 \
+		-extra-arg=-DHOSTGOOS_$(HOSTOS)=1 -extra-arg=-DGIT_REVISION=\"$(REV)\" \
 		executor/*.cc
 
 lint:
@@ -265,73 +259,6 @@ lint:
 	CGO_ENABLED=1 $(HOSTGO) build -buildmode=plugin -o bin/syz-linter.so ./tools/syz-linter
 	bin/golangci-lint run ./...
 
-arch_darwin_amd64_host:
-	env HOSTOS=darwin HOSTARCH=amd64 $(MAKE) host
-
-arch_linux_amd64_host:
-	env HOSTOS=linux HOSTARCH=amd64 $(MAKE) host
-
-arch_linux_amd64_target:
-	env TARGETOS=linux TARGETARCH=amd64 $(MAKE) target
-
-arch_linux_386_target:
-	env TARGETOS=linux TARGETARCH=386 $(MAKE) target
-
-arch_linux_arm64_target:
-	env TARGETOS=linux TARGETARCH=arm64 $(MAKE) target
-
-arch_linux_arm_target:
-	env TARGETOS=linux TARGETARCH=arm $(MAKE) target
-
-arch_linux_mips64le_target:
-	env TARGETOS=linux TARGETARCH=mips64le $(MAKE) target
-
-arch_linux_ppc64le_target:
-	env TARGETOS=linux TARGETARCH=ppc64le $(MAKE) target
-
-arch_linux_riscv64_target:
-	env TARGETOS=linux TARGETARCH=riscv64 $(MAKE) target
-
-arch_linux_s390x_target:
-	env TARGETOS=linux TARGETARCH=s390x $(MAKE) target
-
-arch_freebsd_amd64_host:
-	env HOSTOS=freebsd HOSTARCH=amd64 $(MAKE) host
-
-arch_freebsd_amd64_target:
-	env TARGETOS=freebsd TARGETARCH=amd64 $(MAKE) target
-
-arch_freebsd_386_target:
-	env TARGETOS=freebsd TARGETARCH=386 $(MAKE) target
-
-arch_netbsd_amd64_host:
-	env HOSTOS=netbsd HOSTARCH=amd64 $(MAKE) host
-
-arch_netbsd_amd64_target:
-	env TARGETOS=netbsd TARGETARCH=amd64 $(MAKE) target
-
-arch_openbsd_amd64_host:
-	env HOSTOS=openbsd HOSTARCH=amd64 $(MAKE) host
-
-arch_openbsd_amd64_target:
-	env TARGETOS=openbsd TARGETARCH=amd64 $(MAKE) target
-
-arch_windows_amd64_target:
-	env TARGETOS=windows TARGETARCH=amd64 $(MAKE) target
-
-arch_akaros_target:
-	env TARGETOS=akaros TARGETARCH=amd64 $(MAKE) executor
-
-arch_fuchsia_target:
-	env TARGETOS=fuchsia TARGETARCH=amd64 $(MAKE) executor
-	env TARGETOS=fuchsia TARGETARCH=arm64 $(MAKE) executor
-
-arch_test:
-	env TARGETOS=test TARGETARCH=64 $(MAKE) executor
-	env TARGETOS=test TARGETARCH=64_fork $(MAKE) executor
-	env TARGETOS=test TARGETARCH=32_shmem $(MAKE) executor
-	env TARGETOS=test TARGETARCH=32_fork_shmem $(MAKE) executor
-
 presubmit:
 	$(MAKE) presubmit_smoke
 	$(MAKE) presubmit_arch
@@ -339,7 +266,7 @@ presubmit:
 
 presubmit_smoke:
 	$(MAKE) generate
-	$(MAKE) -j100 check_diff check_copyright check_language check_links presubmit_build
+	$(MAKE) -j100 check_commits check_diff check_copyright check_language check_whitespace check_links presubmit_build tidy
 	$(MAKE) test
 
 presubmit_build:
@@ -349,27 +276,32 @@ presubmit_build:
 	$(MAKE) lint
 
 presubmit_arch: descriptions
-	$(MAKE) arch_linux_amd64_host
-	$(MAKE) arch_freebsd_amd64_host
-	$(MAKE) arch_netbsd_amd64_host
-	$(MAKE) arch_openbsd_amd64_host
-	$(MAKE) arch_linux_amd64_target
-	$(MAKE) arch_linux_386_target
-	$(MAKE) arch_linux_arm64_target
-	$(MAKE) arch_linux_arm_target
-	$(MAKE) arch_linux_ppc64le_target
-	$(MAKE) arch_linux_mips64le_target
-	$(MAKE) arch_linux_s390x_target
-	$(MAKE) arch_linux_riscv64_target
-	$(MAKE) arch_freebsd_amd64_target
-	$(MAKE) arch_freebsd_386_target
-	$(MAKE) arch_netbsd_amd64_target
-	$(MAKE) arch_openbsd_amd64_target
-	$(MAKE) arch_darwin_amd64_host
-	$(MAKE) arch_windows_amd64_target
-	$(MAKE) arch_akaros_target
-	$(MAKE) arch_fuchsia_target
-	$(MAKE) arch_test
+	env HOSTOS=linux HOSTARCH=amd64 $(MAKE) host
+	env HOSTOS=freebsd HOSTARCH=amd64 $(MAKE) host
+	env HOSTOS=netbsd HOSTARCH=amd64 $(MAKE) host
+	env HOSTOS=openbsd HOSTARCH=amd64 $(MAKE) host
+	env HOSTOS=darwin HOSTARCH=amd64 $(MAKE) host
+	env TARGETOS=linux TARGETARCH=amd64 $(MAKE) target
+	env TARGETOS=linux TARGETARCH=amd64 SYZ_CLANG=yes $(MAKE) target
+	env TARGETOS=linux TARGETARCH=386 $(MAKE) target
+	env TARGETOS=linux TARGETARCH=arm64 $(MAKE) target
+	env TARGETOS=linux TARGETARCH=arm $(MAKE) target
+	env TARGETOS=linux TARGETARCH=mips64le $(MAKE) target
+	env TARGETOS=linux TARGETARCH=ppc64le $(MAKE) target
+	env TARGETOS=linux TARGETARCH=riscv64 $(MAKE) target
+	env TARGETOS=linux TARGETARCH=s390x $(MAKE) target
+	env TARGETOS=freebsd TARGETARCH=amd64 $(MAKE) target
+	env TARGETOS=freebsd TARGETARCH=386 $(MAKE) target
+	env TARGETOS=netbsd TARGETARCH=amd64 $(MAKE) target
+	env TARGETOS=openbsd TARGETARCH=amd64 $(MAKE) target
+	env TARGETOS=windows TARGETARCH=amd64 $(MAKE) target
+	env TARGETOS=akaros TARGETARCH=amd64 $(MAKE) executor
+	env TARGETOS=fuchsia TARGETARCH=amd64 $(MAKE) executor
+	env TARGETOS=fuchsia TARGETARCH=arm64 $(MAKE) executor
+	env TARGETOS=test TARGETARCH=64 $(MAKE) executor
+	env TARGETOS=test TARGETARCH=64_fork $(MAKE) executor
+	env TARGETOS=test TARGETARCH=32_shmem $(MAKE) executor
+	env TARGETOS=test TARGETARCH=32_fork_shmem $(MAKE) executor
 
 presubmit_big: descriptions
 	# This target runs on CI in syz-big-env,
@@ -381,6 +313,15 @@ presubmit_race: descriptions
 	env CGO_ENABLED=1 $(GO) test -race; if test $$? -ne 2; then \
 	env CGO_ENABLED=1 $(GO) test -race -short -bench=.* -benchtime=.2s ./... ;\
 	fi
+
+presubmit_old: descriptions
+	# Binaries we can compile in syz-old-env. 386 is broken, riscv64 is missing.
+	TARGETARCH=amd64 $(MAKE) target
+	TARGETARCH=arm64 $(MAKE) target
+	TARGETARCH=arm $(MAKE) target
+	TARGETARCH=ppc64le $(MAKE) target
+	TARGETARCH=mips64le $(MAKE) target
+	TARGETARCH=s390x $(MAKE) target
 
 test: descriptions
 	$(GO) test -short -coverprofile=.coverage.txt ./...
@@ -402,8 +343,9 @@ install_prerequisites:
 	sudo apt-get install -y -q g++-mips64el-linux-gnuabi64 || true
 	sudo apt-get install -y -q g++-s390x-linux-gnu || true
 	sudo apt-get install -y -q g++-riscv64-linux-gnu || true
-	sudo apt-get install -y -q ragel clang-format
-	go get -u golang.org/x/tools/cmd/goyacc
+	sudo apt-get install -y -q clang-tidy || true
+	sudo apt-get install -y -q clang clang-format ragel
+	GO111MODULE=off go get -u golang.org/x/tools/cmd/goyacc
 
 check_copyright:
 	./tools/check-copyright.sh
@@ -411,8 +353,14 @@ check_copyright:
 check_language:
 	./tools/check-language.sh
 
+check_whitespace:
+	./tools/check-whitespace.sh
+
+check_commits:
+	./tools/check-commits.sh
+
 check_links:
-	python ./tools/check_links.py $$(pwd) $$(ls ./*.md; find ./docs/ -name '*.md')
+	python ./tools/check_links.py $$(pwd) $$(find -name '*.md' | grep -v "./vendor/")
 
 # Check that the diff is empty. This is meant to be executed after generating
 # and formatting the code to make sure that everything is committed.

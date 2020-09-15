@@ -31,6 +31,7 @@ var (
 	flagHandleSegv = flag.Bool("segv", false, "catch and ignore SIGSEGV")
 	flagUseTmpDir  = flag.Bool("tmpdir", false, "create a temporary dir and execute inside it")
 	flagTrace      = flag.Bool("trace", false, "trace syscall results")
+	flagRepro      = flag.Bool("repro", false, "add heartbeats used by pkg/repro")
 	flagStrict     = flag.Bool("strict", false, "parse input program in strict mode")
 	flagLeak       = flag.Bool("leak", false, "do leak checking")
 	flagEnable     = flag.String("enable", "none", "enable only listed additional features")
@@ -71,29 +72,30 @@ func main() {
 		os.Exit(1)
 	}
 	opts := csource.Options{
-		Threaded:     *flagThreaded,
-		Collide:      *flagCollide,
-		Repeat:       *flagRepeat != 1,
-		RepeatTimes:  *flagRepeat,
-		Procs:        *flagProcs,
-		Sandbox:      *flagSandbox,
-		Fault:        *flagFaultCall >= 0,
-		FaultCall:    *flagFaultCall,
-		FaultNth:     *flagFaultNth,
-		Leak:         *flagLeak,
-		NetInjection: features["tun"].Enabled,
-		NetDevices:   features["net_dev"].Enabled,
-		NetReset:     features["net_reset"].Enabled,
-		Cgroups:      features["cgroups"].Enabled,
-		BinfmtMisc:   features["binfmt_misc"].Enabled,
-		CloseFDs:     features["close_fds"].Enabled,
-		KCSAN:        features["kcsan"].Enabled,
-		DevlinkPCI:   features["devlink_pci"].Enabled,
-		USB:          features["usb"].Enabled,
-		UseTmpDir:    *flagUseTmpDir,
-		HandleSegv:   *flagHandleSegv,
-		Repro:        false,
-		Trace:        *flagTrace,
+		Threaded:      *flagThreaded,
+		Collide:       *flagCollide,
+		Repeat:        *flagRepeat != 1,
+		RepeatTimes:   *flagRepeat,
+		Procs:         *flagProcs,
+		Sandbox:       *flagSandbox,
+		Fault:         *flagFaultCall >= 0,
+		FaultCall:     *flagFaultCall,
+		FaultNth:      *flagFaultNth,
+		Leak:          *flagLeak,
+		NetInjection:  features["tun"].Enabled,
+		NetDevices:    features["net_dev"].Enabled,
+		NetReset:      features["net_reset"].Enabled,
+		Cgroups:       features["cgroups"].Enabled,
+		BinfmtMisc:    features["binfmt_misc"].Enabled,
+		CloseFDs:      features["close_fds"].Enabled,
+		KCSAN:         features["kcsan"].Enabled,
+		DevlinkPCI:    features["devlink_pci"].Enabled,
+		USB:           features["usb"].Enabled,
+		VhciInjection: features["vhci"].Enabled,
+		UseTmpDir:     *flagUseTmpDir,
+		HandleSegv:    *flagHandleSegv,
+		Repro:         *flagRepro,
+		Trace:         *flagTrace,
 	}
 	src, err := csource.Write(p, opts)
 	if err != nil {

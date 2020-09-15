@@ -33,12 +33,23 @@ the problem you are solving and how it is solved.
 
 `dir/path` is a relative path to the main dir this commit changes
 (look at examples in the [commit history](https://github.com/google/syzkaller/commits/master)).
+If several packages/dirs are significantly affected, then the following format is allowed:
+```
+dir1/path1, dir2/path2: one-line description
+```
+Though, dirs should not be included if they have only minor changes.
+For pervasive changes the following format is allowed:
+```
+all: one-line description
+```
 
 Please pay attention to punctuation. In particular:
 
 - `one-line description` should *not* start with a Capital letter.
 - There is *no dot* at the end of `one-line description`.
 - `Extended multi-line description` is full English sentences with Capital letters and dots.
+
+Commit message line length is limited to 120 characters.
 
 Also:
 
@@ -110,3 +121,22 @@ Or other commands/scripts, e.g.:
 syz-env go test -short ./pkg/csource
 ```
 Or you may run the shell inside of the container with just `syz-env` and look around.
+
+To update `syz-env` container to the latest version do:
+
+``` bash
+docker pull gcr.io/syzkaller/env
+```
+
+If you do not have access to the `gcr.io` registry, there is also a mirror in `docker.pkg.github.com` registry.
+In order to use it, you need to
+[authenticate Docker](https://docs.github.com/en/packages/using-github-packages-with-your-projects-ecosystem/configuring-docker-for-use-with-github-packages)
+with your Github account with:
+```
+docker login https://docker.pkg.github.com
+```
+and then pull the image and retag it to the name expacted by `syz-env`:
+```
+docker pull docker.pkg.github.com/google/syzkaller/env
+docker tag docker.pkg.github.com/google/syzkaller/env gcr.io/syzkaller/env
+```

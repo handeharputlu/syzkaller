@@ -7,7 +7,6 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"net/mail"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/google/syzkaller/pkg/osutil"
 	"github.com/google/syzkaller/pkg/symbolizer"
+	"github.com/google/syzkaller/pkg/vcs"
 )
 
 type linux struct {
@@ -351,7 +351,7 @@ func (ctx *linux) Symbolize(rep *Report) error {
 		if err != nil {
 			return err
 		}
-		rep.Maintainers = maintainers
+		rep.Recipients = maintainers
 	}
 	return nil
 }
@@ -466,14 +466,14 @@ nextFile:
 	return ""
 }
 
-func (ctx *linux) getMaintainers(file string) ([]string, error) {
+func (ctx *linux) getMaintainers(file string) (vcs.Recipients, error) {
 	if ctx.kernelSrc == "" {
 		return nil, nil
 	}
 	return GetLinuxMaintainers(ctx.kernelSrc, file)
 }
 
-func GetLinuxMaintainers(kernelSrc, file string) ([]string, error) {
+func GetLinuxMaintainers(kernelSrc, file string) (vcs.Recipients, error) {
 	mtrs, err := getMaintainersImpl(kernelSrc, file, false)
 	if err != nil {
 		return nil, err
@@ -487,9 +487,9 @@ func GetLinuxMaintainers(kernelSrc, file string) ([]string, error) {
 	return mtrs, nil
 }
 
-func getMaintainersImpl(kernelSrc, file string, blame bool) ([]string, error) {
+func getMaintainersImpl(kernelSrc, file string, blame bool) (vcs.Recipients, error) {
 	// See #1441 re --git-min-percent.
-	args := []string{"--no-n", "--no-rolestats", "--git-min-percent=15"}
+	args := []string{"--git-min-percent=15"}
 	if blame {
 		args = append(args, "--git-blame")
 	}
@@ -499,16 +499,7 @@ func getMaintainersImpl(kernelSrc, file string, blame bool) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	lines := strings.Split(string(output), "\n")
-	var mtrs []string
-	for _, line := range lines {
-		addr, err := mail.ParseAddress(line)
-		if err != nil {
-			continue
-		}
-		mtrs = append(mtrs, addr.Address)
-	}
-	return mtrs, nil
+	return vcs.ParseMaintainersLinux(output), nil
 }
 
 func (ctx *linux) extractFiles(report []byte) []string {
@@ -833,6 +824,8 @@ var linuxStackParams = &stackParams{
 		"list_replace",
 		"list_move",
 		"list_splice",
+		"^rb_",
+		"^__rb_",
 		"_indirect_thunk_", // retpolines
 		"string",
 		"pointer",
@@ -961,7 +954,13 @@ var linuxOopses = append([]*oops{
 				title:  compile("BUG: KMSAN: kernel-usb-infoleak"),
 				report: compile("BUG: KMSAN: kernel-usb-infoleak in {{FUNC}}"),
 				fmt:    "KMSAN: kernel-usb-infoleak in %[2]v",
-				stack:  warningStackFmt("usb_submit_urb", "usb_start_wait_urb", "usb_bulk_msg", "usb_interrupt_msg", "usb_control_msg"),
+				stack: &stackFmt{
+					parts: []*regexp.Regexp{
+						compile("Call Trace:"),
+						parseStackTrace,
+					},
+					skip: []string{"usb_submit_urb", "usb_start_wait_urb", "usb_bulk_msg", "usb_interrupt_msg", "usb_control_msg"},
+				},
 			},
 			{
 				title:  compile("BUG: KMSAN:"),
@@ -1383,6 +1382,17 @@ var linuxOopses = append([]*oops{
 						parseStackTrace,
 					},
 					extractor: linuxHangTaskFrameExtractor,
+				},
+			},
+			{
+				title: compile("INFO: task .* can't die for more than .* seconds"),
+				fmt:   "INFO: task can't die in %[1]v",
+				stack: &stackFmt{
+					parts: []*regexp.Regexp{
+						compile("Call Trace:"),
+						parseStackTrace,
+					},
+					skip: []string{"schedule"},
 				},
 			},
 			{
