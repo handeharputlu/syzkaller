@@ -37,6 +37,7 @@ func initHTTPHandlers() {
 	http.Handle("/x/patch.diff", handlerWrapper(handleTextX(textPatch)))
 	http.Handle("/x/bisect.txt", handlerWrapper(handleTextX(textLog)))
 	http.Handle("/x/error.txt", handlerWrapper(handleTextX(textError)))
+	http.Handle("/x/minfo.txt", handlerWrapper(handleTextX(textMachineInfo)))
 	for ns := range config.Namespaces {
 		http.Handle("/"+ns, handlerWrapper(handleMain))
 		http.Handle("/"+ns+"/fixed", handlerWrapper(handleFixed))
@@ -165,13 +166,14 @@ type uiBug struct {
 }
 
 type uiCrash struct {
-	Manager      string
-	Time         time.Time
-	Maintainers  string
-	LogLink      string
-	ReportLink   string
-	ReproSyzLink string
-	ReproCLink   string
+	Manager         string
+	Time            time.Time
+	Maintainers     string
+	LogLink         string
+	ReportLink      string
+	ReproSyzLink    string
+	ReproCLink      string
+	MachineInfoLink string
 	*uiBuild
 }
 
@@ -547,8 +549,10 @@ func textFilename(tag string) string {
 		return "bisect.txt"
 	case textError:
 		return "error.txt"
+	case textMachineInfo:
+		return "minfo.txt"
 	default:
-		return "text.txt"
+		panic(fmt.Sprintf("unknown tag %v", tag))
 	}
 }
 
@@ -917,13 +921,14 @@ func loadFixBisectionsForBug(c context.Context, bug *Bug) ([]*uiCrash, error) {
 
 func makeUICrash(crash *Crash, build *Build) *uiCrash {
 	ui := &uiCrash{
-		Manager:      crash.Manager,
-		Time:         crash.Time,
-		Maintainers:  strings.Join(crash.Maintainers, ", "),
-		LogLink:      textLink(textCrashLog, crash.Log),
-		ReportLink:   textLink(textCrashReport, crash.Report),
-		ReproSyzLink: textLink(textReproSyz, crash.ReproSyz),
-		ReproCLink:   textLink(textReproC, crash.ReproC),
+		Manager:         crash.Manager,
+		Time:            crash.Time,
+		Maintainers:     strings.Join(crash.Maintainers, ", "),
+		LogLink:         textLink(textCrashLog, crash.Log),
+		ReportLink:      textLink(textCrashReport, crash.Report),
+		ReproSyzLink:    textLink(textReproSyz, crash.ReproSyz),
+		ReproCLink:      textLink(textReproC, crash.ReproC),
+		MachineInfoLink: textLink(textMachineInfo, crash.MachineInfo),
 	}
 	if build != nil {
 		ui.uiBuild = makeUIBuild(build)

@@ -6,13 +6,15 @@ include <linux/stat.h>
 include <uapi/linux/fuse.h>
 include <uapi/linux/fcntl.h>
 
+resource fuse_unique[int64]
 resource fd_fuse[fd]
 
 openat$fuse(fd const[AT_FDCWD], file ptr[in, string["/dev/fuse"]], flags const[O_RDWR], mode const[0]) fd_fuse
 openat$cuse(fd const[AT_FDCWD], file ptr[in, string["/dev/cuse"]], flags const[O_RDWR], mode const[0]) fd_fuse
 ioctl$FUSE_DEV_IOC_CLONE(fd fd_fuse, cmd const[FUSE_DEV_IOC_CLONE], arg ptr[in, fd_fuse])
-read$FUSE(fd fd_fuse, buf ptr[out, array[int8, 4096]], len len[buf])
 
+type read_buffer array[int8, FUSE_MIN_READ_BUFFER]
+read$FUSE(fd fd_fuse, buf ptr[out, fuse_in[read_buffer]], len bytesize[buf])
 mount$fuse(src const[0], dst ptr[in, filename], type ptr[in, string["fuse"]], flags flags[mount_flags], opts ptr[in, fuse_options])
 mount$fuseblk(src ptr[in, string["/dev/loop0"]], dst ptr[in, filename], type ptr[in, string["fuseblk"]], flags flags[mount_flags], opts ptr[in, fuse_options])
 
@@ -39,9 +41,11 @@ write$FUSE_NOTIFY_STORE(fd fd_fuse, arg ptr[in, fuse_notify[FUSE_NOTIFY_STORE, f
 write$FUSE_NOTIFY_RETRIEVE(fd fd_fuse, arg ptr[in, fuse_notify[FUSE_NOTIFY_RETRIEVE, fuse_notify_retrieve_out]], len bytesize[arg])
 write$FUSE_NOTIFY_DELETE(fd fd_fuse, arg ptr[in, fuse_notify[FUSE_NOTIFY_DELETE, fuse_notify_delete_out]], len bytesize[arg])
 
+syz_mount_image$fuse(fs ptr[in, string["fuse"]], dir ptr[in, filename], size const[0], nsegs const[0], segments const[0], flags flags[mount_flags], opts ptr[in, fuse_options]) fd_dir
+syz_fuse_handle_req(fd fd_fuse, buf ptr[in, read_buffer], len bytesize[buf], res ptr[in, syz_fuse_req_out])
+
 type fuse_ino int64[0:6]
 type fuse_gen int64[0:3]
-type fuse_unique int64[1:8]
 
 type fuse_notify[MSG, PAYLOAD] {
 	len	len[parent, int32]
@@ -50,12 +54,30 @@ type fuse_notify[MSG, PAYLOAD] {
 	payload	PAYLOAD
 } [packed]
 
-type fuse_out[PAYLOAD] {
+type fuse_in[PAYLOAD] {
 	len	len[parent, int32]
-	err	flags[fuse_errors, int32]
+	opcode	int32
 	unique	fuse_unique
+	uid	uid
+	gid	gid
+	pid	pid
+	padding	int32
 	payload	PAYLOAD
 } [packed]
+
+type fuse_out_t[UNIQUE, PAYLOAD] {
+	len	len[parent, int32]
+	err	flags[fuse_errors, int32]
+	unique	UNIQUE
+	payload	PAYLOAD
+} [packed]
+
+type fuse_out[PAYLOAD] fuse_out_t[fuse_unique, PAYLOAD]
+# This response header is used by syz_fuse_handle_req(). It defines the FUSE unique
+# identifier as int64 because syz_fuse_handle_req() retrieves it internally
+# (defining it as a resource would create a dependency with read$FUSE() which is
+# incorrect).
+type syz_fuse_out[PAYLOAD] fuse_out_t[int64, PAYLOAD]
 
 # -ENOENT, -EAGAIN, -ENOSYS
 fuse_errors = 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -2, -11, -38
@@ -142,6 +164,10 @@ fuse_write_out {
 	padding	const[0, int32]
 }
 
+fuse_read_out {
+	content	string
+}
+
 fuse_open_out {
 	fh		const[0, int64]
 	open_flags	flags[fuse_open_flags, int32]
@@ -182,7 +208,7 @@ fuse_attr {
 	atimensec	int32
 	mtimensec	int32
 	ctimensec	int32
-	mode		int32
+	mode		flags[fuse_mode, int32]
 	nlink		int32
 	uid		uid
 	gid		gid
@@ -266,3 +292,23 @@ fuse_opts [
 
 fuse_mode = S_IFREG, S_IFCHR, S_IFBLK, S_IFIFO, S_IFSOCK, S_IFLNK, S_IFDIR
 fuse_block_sizes = 512, 1024, 2048, 4096
+
+# Used by syz_fuse_handle_req() to mimic a FUSE daemon.
+syz_fuse_req_out {
+	init		ptr[in, syz_fuse_out[fuse_init_out]]
+	lseek		ptr[in, syz_fuse_out[fuse_lseek_out]]
+	bmap		ptr[in, syz_fuse_out[fuse_bmap_out]]
+	poll		ptr[in, syz_fuse_out[fuse_poll_out]]
+	getxattr	ptr[in, syz_fuse_out[fuse_getxattr_out]]
+	lk		ptr[in, syz_fuse_out[fuse_lk_out]]
+	statfs		ptr[in, syz_fuse_out[fuse_statfs_out]]
+	write		ptr[in, syz_fuse_out[fuse_write_out]]
+	read		ptr[in, syz_fuse_out[fuse_read_out]]
+	open		ptr[in, syz_fuse_out[fuse_open_out]]
+	attr		ptr[in, syz_fuse_out[fuse_attr_out]]
+	entry		ptr[in, syz_fuse_out[fuse_entry_out]]
+	dirent		ptr[in, syz_fuse_out[array[fuse_dirent]]]
+	direntplus	ptr[in, syz_fuse_out[array[fuse_direntplus]]]
+	create_open	ptr[in, syz_fuse_out[fuse_create_open_out]]
+	ioctl		ptr[in, syz_fuse_out[fuse_ioctl_out]]
+}

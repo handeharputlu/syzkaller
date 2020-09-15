@@ -8,6 +8,7 @@ Instructions for a particular VM type or kernel architecture can be found on the
 - [Setup: Linux host, QEMU vm, arm64 kernel](setup_linux-host_qemu-vm_arm64-kernel.md)
 - [Setup: Linux host, QEMU vm, arm kernel](setup_linux-host_qemu-vm_arm-kernel.md)
 - [Setup: Linux host, QEMU vm, riscv64 kernel](setup_linux-host_qemu-vm_riscv64-kernel.md)
+- [Setup: Linux host, QEMU vm, s390x kernel](setup_linux-host_qemu-vm_s390x-kernel.md)
 - [Setup: Linux host, Android device, arm32/64 kernel](setup_linux-host_android-device_arm-kernel.md)
 - [Setup: Linux isolated host](setup_linux-host_isolated.md)
 - [Setup: Ubuntu host, Odroid C2 board, arm64 kernel](setup_ubuntu-host_odroid-c2-board_arm64-kernel.md) [outdated]
@@ -26,7 +27,8 @@ If you encounter any troubles, check the [troubleshooting](/docs/troubleshooting
 ### Go and syzkaller
 
 `syzkaller` is written in [Go](https://golang.org), and `Go 1.13+`
-toolchain is required for build. The toolchain can be installed with:
+toolchain is required for build. *Note:* `Go 1.14` is required for contributors,
+as `Go 1.13` may change `go.mod` file. The toolchain can be installed with:
 
 ```
 wget https://dl.google.com/go/go1.14.2.linux-amd64.tar.gz
@@ -39,6 +41,8 @@ export PATH=$GOPATH/bin:$PATH
 export PATH=$GOROOT/bin:$PATH
 ```
 
+See [Go: Download and install](https://golang.org/doc/install) for other options.
+
 To download and build `syzkaller`:
 
 ``` bash
@@ -48,8 +52,6 @@ make
 ```
 
 As the result compiled binaries should appear in the `bin/` dir.
-
-Also see [Go Getting Started](https://golang.org/doc/install) for more details.
 
 Note: if you want to do cross-OS/arch testing, you need to specify `TARGETOS`,
 `TARGETVMARCH` and `TARGETARCH` arguments to `make`. See the [Makefile](/Makefile) for details.

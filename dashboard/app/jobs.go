@@ -489,12 +489,15 @@ func doneJob(c context.Context, req *dashapi.JobDoneReq) error {
 			return err
 		}
 		for _, com := range req.Commits {
+			cc := email.MergeEmailLists(com.CC,
+				GetEmails(com.Recipients, dashapi.To),
+				GetEmails(com.Recipients, dashapi.Cc))
 			job.Commits = append(job.Commits, Commit{
 				Hash:       com.Hash,
 				Title:      com.Title,
 				Author:     com.Author,
 				AuthorName: com.AuthorName,
-				CC:         strings.Join(sanitizeCC(c, com.CC), "|"),
+				CC:         strings.Join(sanitizeCC(c, cc), "|"),
 				Date:       com.Date,
 			})
 		}
@@ -665,21 +668,22 @@ func createBugReportForJob(c context.Context, job *Job, jobKey *db.Key, config i
 	}
 	kernelRepo := kernelRepoInfo(build)
 	rep := &dashapi.BugReport{
-		Type:         typ,
-		Config:       reportingConfig,
-		JobID:        extJobID(jobKey),
-		ExtID:        job.ExtID,
-		CC:           append(job.CC, kernelRepo.CC...),
-		Log:          crashLog,
-		LogLink:      externalLink(c, textCrashLog, job.CrashLog),
-		Report:       report,
-		ReportLink:   externalLink(c, textCrashReport, job.CrashReport),
-		ReproCLink:   externalLink(c, textReproC, crash.ReproC),
-		ReproSyzLink: externalLink(c, textReproSyz, crash.ReproSyz),
-		CrashTitle:   job.CrashTitle,
-		Error:        jobError,
-		ErrorLink:    externalLink(c, textError, job.Error),
-		PatchLink:    externalLink(c, textPatch, job.Patch),
+		Type:            typ,
+		Config:          reportingConfig,
+		JobID:           extJobID(jobKey),
+		ExtID:           job.ExtID,
+		CC:              append(job.CC, kernelRepo.CC...),
+		Log:             crashLog,
+		LogLink:         externalLink(c, textCrashLog, job.CrashLog),
+		Report:          report,
+		ReportLink:      externalLink(c, textCrashReport, job.CrashReport),
+		ReproCLink:      externalLink(c, textReproC, crash.ReproC),
+		ReproSyzLink:    externalLink(c, textReproSyz, crash.ReproSyz),
+		MachineInfoLink: externalLink(c, textMachineInfo, crash.MachineInfo),
+		CrashTitle:      job.CrashTitle,
+		Error:           jobError,
+		ErrorLink:       externalLink(c, textError, job.Error),
+		PatchLink:       externalLink(c, textPatch, job.Patch),
 	}
 	if job.Type == JobBisectCause || job.Type == JobBisectFix {
 		rep.Maintainers = append(crash.Maintainers, kernelRepo.Maintainers...)

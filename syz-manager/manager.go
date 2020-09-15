@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"math/rand"
 	"net"
 	"os"
@@ -50,7 +51,7 @@ type Manager struct {
 	sysTarget      *targets.Target
 	reporter       report.Reporter
 	crashdir       string
-	port           int
+	serv           *RPCServer
 	corpusDB       *db.DB
 	startTime      time.Time
 	firstConnect   time.Time
@@ -73,6 +74,7 @@ type Manager struct {
 	candidates       []rpctype.RPCCandidate // untriaged inputs from corpus and hub
 	disabledHashes   map[string]struct{}
 	corpus           map[string]rpctype.RPCInput
+	seeds            [][]byte
 	newRepros        [][]byte
 	lastMinCorpus    int
 	memoryLeakFrames map[string]bool
@@ -109,6 +111,7 @@ type Crash struct {
 	vmIndex int
 	hub     bool // this crash was created based on a repro from hub
 	*report.Report
+	machineInfo []byte
 }
 
 func main() {
@@ -181,18 +184,12 @@ func RunManager(cfg *mgrconfig.Config, target *prog.Target, sysTarget *targets.T
 		saturatedCalls:        make(map[string]bool),
 	}
 
-	log.Logf(0, "loading corpus...")
-	mgr.corpusDB, err = db.Open(filepath.Join(cfg.Workdir, "corpus.db"))
-	if err != nil {
-		log.Fatalf("failed to open corpus database: %v", err)
-	}
-
-	// Create HTTP server.
-	mgr.initHTTP()
+	mgr.preloadCorpus()
+	mgr.initHTTP() // Creates HTTP server.
 	mgr.collectUsedFiles()
 
 	// Create RPC server for fuzzers.
-	mgr.port, err = startRPCServer(mgr)
+	mgr.serv, err = startRPCServer(mgr)
 	if err != nil {
 		log.Fatalf("failed to create rpc server: %v", err)
 	}
@@ -266,7 +263,7 @@ func RunManager(cfg *mgrconfig.Config, target *prog.Target, sysTarget *targets.T
 	if mgr.vmPool == nil {
 		log.Logf(0, "no VMs started (type=none)")
 		log.Logf(0, "you are supposed to start syz-fuzzer manually as:")
-		log.Logf(0, "syz-fuzzer -manager=manager.ip:%v [other flags as necessary]", mgr.port)
+		log.Logf(0, "syz-fuzzer -manager=manager.ip:%v [other flags as necessary]", mgr.serv.port)
 		<-vm.Shutdown
 		return
 	}
@@ -449,6 +446,29 @@ func (mgr *Manager) vmLoop() {
 	}
 }
 
+func (mgr *Manager) preloadCorpus() {
+	log.Logf(0, "loading corpus...")
+	corpusDB, err := db.Open(filepath.Join(mgr.cfg.Workdir, "corpus.db"))
+	if err != nil {
+		log.Fatalf("failed to open corpus database: %v", err)
+	}
+	mgr.corpusDB = corpusDB
+
+	if seedDir := filepath.Join(mgr.cfg.Syzkaller, "sys", mgr.cfg.TargetOS, "test"); osutil.IsExist(seedDir) {
+		seeds, err := ioutil.ReadDir(seedDir)
+		if err != nil {
+			log.Fatalf("failed to read seeds dir: %v", err)
+		}
+		for _, seed := range seeds {
+			data, err := ioutil.ReadFile(filepath.Join(seedDir, seed.Name()))
+			if err != nil {
+				log.Fatalf("failed to read seed %v: %v", seed.Name(), err)
+			}
+			mgr.seeds = append(mgr.seeds, data)
+		}
+	}
+}
+
 func (mgr *Manager) loadCorpus() {
 	// By default we don't re-minimize/re-smash programs from corpus,
 	// it takes lots of time on start and is unnecessary.
@@ -475,30 +495,21 @@ func (mgr *Manager) loadCorpus() {
 	}
 	broken := 0
 	for key, rec := range mgr.corpusDB.Records {
-		bad, disabled := checkProgram(mgr.target, mgr.targetEnabledSyscalls, rec.Val)
-		if bad {
+		if !mgr.loadProg(rec.Val, minimized, smashed) {
 			mgr.corpusDB.Delete(key)
 			broken++
-			continue
 		}
-		if disabled {
-			// This program contains a disabled syscall.
-			// We won't execute it, but remember its hash so
-			// it is not deleted during minimization.
-			mgr.disabledHashes[hash.String(rec.Val)] = struct{}{}
-			continue
-		}
-		mgr.candidates = append(mgr.candidates, rpctype.RPCCandidate{
-			Prog:      rec.Val,
-			Minimized: minimized,
-			Smashed:   smashed,
-		})
 	}
 	mgr.fresh = len(mgr.corpusDB.Records) == 0
-	log.Logf(0, "%-24v: %v (deleted %v broken)",
-		"corpus", len(mgr.candidates), broken)
+	corpusSize := len(mgr.candidates)
+	log.Logf(0, "%-24v: %v (deleted %v broken)", "corpus", corpusSize, broken)
 
-	// Now this is ugly.
+	for _, seed := range mgr.seeds {
+		mgr.loadProg(seed, true, false)
+	}
+	log.Logf(0, "%-24v: %v/%v", "seeds", len(mgr.candidates)-corpusSize, len(mgr.seeds))
+	mgr.seeds = nil
+
 	// We duplicate all inputs in the corpus and shuffle the second part.
 	// This solves the following problem. A fuzzer can crash while triaging candidates,
 	// in such case it will also lost all cached candidates. Or, the input can be somewhat flaky
@@ -513,6 +524,26 @@ func (mgr *Manager) loadCorpus() {
 		panic(fmt.Sprintf("loadCorpus: bad phase %v", mgr.phase))
 	}
 	mgr.phase = phaseLoadedCorpus
+}
+
+func (mgr *Manager) loadProg(data []byte, minimized, smashed bool) bool {
+	bad, disabled := checkProgram(mgr.target, mgr.targetEnabledSyscalls, data)
+	if bad {
+		return false
+	}
+	if disabled {
+		// This program contains a disabled syscall.
+		// We won't execute it, but remember its hash so
+		// it is not deleted during minimization.
+		mgr.disabledHashes[hash.String(data)] = struct{}{}
+		return true
+	}
+	mgr.candidates = append(mgr.candidates, rpctype.RPCCandidate{
+		Prog:      data,
+		Minimized: minimized,
+		Smashed:   smashed,
+	})
+	return true
 }
 
 func checkProgram(target *prog.Target, enabled map[*prog.Syscall]bool, data []byte) (bad, disabled bool) {
@@ -533,13 +564,37 @@ func checkProgram(target *prog.Target, enabled map[*prog.Syscall]bool, data []by
 
 func (mgr *Manager) runInstance(index int) (*Crash, error) {
 	mgr.checkUsedFiles()
+	instanceName := fmt.Sprintf("vm-%d", index)
+
+	rep, err := mgr.runInstanceInner(index, instanceName)
+
+	machineInfo := mgr.serv.shutdownInstance(instanceName)
+
+	// Error that is not a VM crash.
+	if err != nil {
+		return nil, err
+	}
+	// No crash.
+	if rep == nil {
+		return nil, nil
+	}
+	crash := &Crash{
+		vmIndex:     index,
+		hub:         false,
+		Report:      rep,
+		machineInfo: machineInfo,
+	}
+	return crash, nil
+}
+
+func (mgr *Manager) runInstanceInner(index int, instanceName string) (*report.Report, error) {
 	inst, err := mgr.vmPool.Create(index)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create instance: %v", err)
 	}
 	defer inst.Close()
 
-	fwdAddr, err := inst.Forward(mgr.port)
+	fwdAddr, err := inst.Forward(mgr.serv.port)
 	if err != nil {
 		return nil, fmt.Errorf("failed to setup port forwarding: %v", err)
 	}
@@ -570,7 +625,8 @@ func (mgr *Manager) runInstance(index int) (*Crash, error) {
 	start := time.Now()
 	atomic.AddUint32(&mgr.numFuzzing, 1)
 	defer atomic.AddUint32(&mgr.numFuzzing, ^uint32(0))
-	cmd := instance.FuzzerCmd(fuzzerBin, executorCmd, fmt.Sprintf("vm-%v", index),
+
+	cmd := instance.FuzzerCmd(fuzzerBin, executorCmd, instanceName,
 		mgr.cfg.TargetOS, mgr.cfg.TargetArch, fwdAddr, mgr.cfg.Sandbox, procs, fuzzerV,
 		mgr.cfg.Cover, *flagDebug, false, false)
 	outc, errc, err := inst.Run(time.Hour, mgr.vmStop, cmd)
@@ -581,15 +637,9 @@ func (mgr *Manager) runInstance(index int) (*Crash, error) {
 	rep := inst.MonitorExecution(outc, errc, mgr.reporter, vm.ExitTimeout)
 	if rep == nil {
 		// This is the only "OK" outcome.
-		log.Logf(0, "vm-%v: running for %v, restarting", index, time.Since(start))
-		return nil, nil
+		log.Logf(0, "%s: running for %v, restarting", instanceName, time.Since(start))
 	}
-	crash := &Crash{
-		vmIndex: index,
-		hub:     false,
-		Report:  rep,
-	}
-	return crash, nil
+	return rep, nil
 }
 
 func (mgr *Manager) emailCrash(crash *Crash) {
@@ -648,9 +698,10 @@ func (mgr *Manager) saveCrash(crash *Crash) bool {
 			BuildID:     mgr.cfg.Tag,
 			Title:       crash.Title,
 			Corrupted:   crash.Corrupted,
-			Maintainers: crash.Maintainers,
+			Recipients:  crash.Recipients.ToDash(),
 			Log:         crash.Output,
 			Report:      crash.Report.Report,
+			MachineInfo: crash.machineInfo,
 		}
 		resp, err := mgr.dash.ReportCrash(dc)
 		if err != nil {
@@ -694,6 +745,9 @@ func (mgr *Manager) saveCrash(crash *Crash) bool {
 	}
 	if len(crash.Report.Report) > 0 {
 		osutil.WriteFile(filepath.Join(dir, fmt.Sprintf("report%v", oldestI)), crash.Report.Report)
+	}
+	if len(crash.machineInfo) > 0 {
+		osutil.WriteFile(filepath.Join(dir, fmt.Sprintf("machineInfo%v", oldestI)), crash.machineInfo)
 	}
 
 	return mgr.needLocalRepro(crash)
@@ -811,14 +865,14 @@ func (mgr *Manager) saveRepro(res *repro.Result, stats *repro.Stats, hub bool) {
 		//    so maybe corrupted report detection is broken.
 		// 3. Reproduction is expensive so it's good to persist the result.
 		dc := &dashapi.Crash{
-			BuildID:     mgr.cfg.Tag,
-			Title:       res.Report.Title,
-			Maintainers: res.Report.Maintainers,
-			Log:         res.Report.Output,
-			Report:      res.Report.Report,
-			ReproOpts:   res.Opts.Serialize(),
-			ReproSyz:    res.Prog.Serialize(),
-			ReproC:      cprogText,
+			BuildID:    mgr.cfg.Tag,
+			Title:      res.Report.Title,
+			Recipients: res.Report.Recipients.ToDash(),
+			Log:        res.Report.Output,
+			Report:     res.Report.Report,
+			ReproOpts:  res.Opts.Serialize(),
+			ReproSyz:   res.Prog.Serialize(),
+			ReproC:     cprogText,
 		}
 		if _, err := mgr.dash.ReportCrash(dc); err != nil {
 			log.Logf(0, "failed to report repro to dashboard: %v", err)

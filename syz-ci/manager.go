@@ -126,6 +126,7 @@ func createManager(cfg *Config, mgrcfg *ManagerConfig, stop chan struct{}) (*Man
 		dash:       dash,
 		stop:       stop,
 	}
+
 	os.RemoveAll(mgr.currentDir)
 	return mgr, nil
 }
@@ -313,7 +314,7 @@ func (mgr *Manager) build(kernelCommit *vcs.Commit) error {
 		case *build.KernelError:
 			rep.Report = err1.Report
 			rep.Output = err1.Output
-			rep.Maintainers = err1.Maintainers
+			rep.Recipients = err1.Recipients
 		case *osutil.VerboseError:
 			rep.Report = []byte(err1.Title)
 			rep.Output = err1.Output
@@ -440,11 +441,11 @@ func (mgr *Manager) reportBuildError(rep *report.Report, info *BuildInfo, imageD
 	req := &dashapi.BuildErrorReq{
 		Build: *build,
 		Crash: dashapi.Crash{
-			Title:       rep.Title,
-			Corrupted:   false, // Otherwise they get merged with other corrupted reports.
-			Maintainers: rep.Maintainers,
-			Log:         rep.Output,
-			Report:      rep.Report,
+			Title:      rep.Title,
+			Corrupted:  false, // Otherwise they get merged with other corrupted reports.
+			Recipients: rep.Recipients.ToDash(),
+			Log:        rep.Output,
+			Report:     rep.Report,
 		},
 	}
 	return mgr.dash.ReportBuildError(req)

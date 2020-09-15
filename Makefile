@@ -94,7 +94,7 @@ ifeq ("$(TARGETOS)", "trusty")
 	TARGETGOARCH := $(HOSTARCH)
 endif
 
-.PHONY: all host target \
+.PHONY: all clean host target \
 	manager runtest fuzzer executor \
 	ci hub \
 	execprog mutate prog2c trace2syz stress repro upgrade db \
@@ -102,8 +102,8 @@ endif
 	bin/syz-extract bin/syz-fmt \
 	extract generate generate_go generate_sys \
 	format format_go format_cpp format_sys \
-	tidy test test_race check_copyright check_language check_links check_diff \
-	presubmit presubmit_parallel clean
+	tidy test test_race check_copyright check_language check_whitespace check_links check_diff check_commits \
+	presubmit presubmit_smoke presubmit_build presubmit_arch presubmit_big presubmit_race presubmit_old
 
 all: host target
 host: manager runtest repro mutate prog2c db upgrade
@@ -246,10 +246,11 @@ format_sys: bin/syz-fmt
 bin/syz-fmt:
 	$(HOSTGO) build $(GOHOSTFLAGS) -o $@ ./tools/syz-fmt
 
-tidy:
-	# A single check is enabled for now. But it's always fixable and proved to be useful.
-	clang-tidy -quiet -header-filter=.* -checks=-*,misc-definitions-in-headers -warnings-as-errors=* \
+tidy: descriptions
+	clang-tidy -quiet -header-filter=.* -warnings-as-errors=* \
+		-checks=-*,misc-definitions-in-headers,bugprone-macro-parentheses,clang-analyzer-*,-clang-analyzer-security.insecureAPI*,-clang-analyzer-optin.performance* \
 		-extra-arg=-DGOOS_$(TARGETOS)=1 -extra-arg=-DGOARCH_$(TARGETARCH)=1 \
+		-extra-arg=-DHOSTGOOS_$(HOSTOS)=1 -extra-arg=-DGIT_REVISION=\"$(REV)\" \
 		executor/*.cc
 
 lint:
@@ -265,7 +266,7 @@ presubmit:
 
 presubmit_smoke:
 	$(MAKE) generate
-	$(MAKE) -j100 check_diff check_copyright check_language check_links presubmit_build
+	$(MAKE) -j100 check_commits check_diff check_copyright check_language check_whitespace check_links presubmit_build tidy
 	$(MAKE) test
 
 presubmit_build:
@@ -313,6 +314,15 @@ presubmit_race: descriptions
 	env CGO_ENABLED=1 $(GO) test -race -short -bench=.* -benchtime=.2s ./... ;\
 	fi
 
+presubmit_old: descriptions
+	# Binaries we can compile in syz-old-env. 386 is broken, riscv64 is missing.
+	TARGETARCH=amd64 $(MAKE) target
+	TARGETARCH=arm64 $(MAKE) target
+	TARGETARCH=arm $(MAKE) target
+	TARGETARCH=ppc64le $(MAKE) target
+	TARGETARCH=mips64le $(MAKE) target
+	TARGETARCH=s390x $(MAKE) target
+
 test: descriptions
 	$(GO) test -short -coverprofile=.coverage.txt ./...
 
@@ -333,8 +343,9 @@ install_prerequisites:
 	sudo apt-get install -y -q g++-mips64el-linux-gnuabi64 || true
 	sudo apt-get install -y -q g++-s390x-linux-gnu || true
 	sudo apt-get install -y -q g++-riscv64-linux-gnu || true
+	sudo apt-get install -y -q clang-tidy || true
 	sudo apt-get install -y -q clang clang-format ragel
-	go get -u golang.org/x/tools/cmd/goyacc
+	GO111MODULE=off go get -u golang.org/x/tools/cmd/goyacc
 
 check_copyright:
 	./tools/check-copyright.sh
@@ -342,8 +353,14 @@ check_copyright:
 check_language:
 	./tools/check-language.sh
 
+check_whitespace:
+	./tools/check-whitespace.sh
+
+check_commits:
+	./tools/check-commits.sh
+
 check_links:
-	python ./tools/check_links.py $$(pwd) $$(ls ./*.md; find ./docs/ -name '*.md')
+	python ./tools/check_links.py $$(pwd) $$(find -name '*.md' | grep -v "./vendor/")
 
 # Check that the diff is empty. This is meant to be executed after generating
 # and formatting the code to make sure that everything is committed.

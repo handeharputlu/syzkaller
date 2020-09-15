@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/syzkaller/pkg/osutil"
 	"github.com/google/syzkaller/pkg/report"
+	"github.com/google/syzkaller/pkg/vcs"
 )
 
 // Params is input arguments for the Image function.
@@ -90,10 +91,10 @@ func Clean(targetOS, targetArch, vmType, kernelDir string) error {
 }
 
 type KernelError struct {
-	Report      []byte
-	Output      []byte
-	Maintainers []string
-	guiltyFile  string
+	Report     []byte
+	Output     []byte
+	Recipients vcs.Recipients
+	guiltyFile string
 }
 
 func (err *KernelError) Error() string {
@@ -119,6 +120,7 @@ func getBuilder(targetOS, targetArch, vmType string) (builder, error) {
 		{"linux", "amd64", []string{"gvisor"}, gvisor{}},
 		{"linux", "amd64", []string{"gce", "qemu"}, linux{}},
 		{"linux", "ppc64le", []string{"qemu"}, linux{}},
+		{"linux", "s390x", []string{"qemu"}, linux{}},
 		{"fuchsia", "amd64", []string{"qemu"}, fuchsia{}},
 		{"fuchsia", "arm64", []string{"qemu"}, fuchsia{}},
 		{"akaros", "amd64", []string{"qemu"}, akaros{}},
@@ -195,7 +197,7 @@ func extractRootCause(err error, OS, kernelSrc string) error {
 		if err != nil {
 			kernelErr.Output = append(kernelErr.Output, err.Error()...)
 		}
-		kernelErr.Maintainers = maintainers
+		kernelErr.Recipients = maintainers
 	}
 	return kernelErr
 }

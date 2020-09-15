@@ -438,12 +438,13 @@ func fuchsiaCFlags(arch, clangArch string) []string {
 		"-lfdio",
 		"-lzircon",
 		"--sysroot", out + "/zircon_toolchain/obj/zircon/public/sysroot/sysroot",
-		"-I", sourceDirVar + "/zircon/system/ulib/fdio/include",
+		"-I", sourceDirVar + "/sdk/lib/fdio/include",
 		"-I", sourceDirVar + "/zircon/system/ulib/fidl/include",
 		"-I", sourceDirVar + "/src/lib/ddk/include",
 		"-I", out + "/fidling/gen/sdk/fidl/fuchsia.device",
 		"-I", out + "/fidling/gen/sdk/fidl/fuchsia.device.manager",
 		"-I", out + "/fidling/gen/sdk/fidl/fuchsia.hardware.nand",
+		"-I", out + "/fidling/gen/sdk/fidl/fuchsia.hardware.power.statecontrol",
 		"-I", out + "/fidling/gen/sdk/fidl/fuchsia.hardware.usb.peripheral",
 		"-I", out + "/fidling/gen/zircon/vdso/zx",
 		"-L", out + "/" + arch + "-shared",
@@ -456,13 +457,14 @@ func init() {
 			initTarget(target, OS, arch)
 		}
 	}
+	goarch := runtime.GOARCH
 	goos := runtime.GOOS
 	if goos == "android" {
 		goos = "linux"
 	}
 	for _, target := range List["test"] {
 		if List[goos] != nil {
-			if host := List[goos][runtime.GOARCH]; host != nil {
+			if host := List[goos][goarch]; host != nil {
 				target.CCompiler = host.CCompiler
 				target.CPP = host.CPP
 				if goos == "freebsd" {
@@ -474,6 +476,13 @@ func init() {
 					// to link against the libc++ library.
 					target.CFlags = append(target.CFlags, "-lc++")
 				}
+			}
+			if target.PtrSize == 4 && goos == "freebsd" && goarch == "amd64" {
+				// A hack to let 32-bit "test" target tests run on FreeBSD:
+				// freebsd/386 requires a non-default DataOffset to avoid
+				// clobbering mappings created by the C runtime. Since that is the
+				// only target with this constraint, just special-case it for now.
+				target.DataOffset = List[goos]["386"].DataOffset
 			}
 		}
 		target.BuildOS = goos

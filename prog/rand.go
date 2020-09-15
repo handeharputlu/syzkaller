@@ -26,9 +26,9 @@ const (
 
 type randGen struct {
 	*rand.Rand
-	target           *Target
-	inCreateResource bool
-	recDepth         map[string]int
+	target             *Target
+	inGenerateResource bool
+	recDepth           map[string]int
 }
 
 func newRand(target *Target, rs rand.Source) *randGen {
@@ -345,12 +345,6 @@ func (r *randGen) allocVMA(s *state, typ Type, dir Dir, numPages uint64) *Pointe
 }
 
 func (r *randGen) createResource(s *state, res *ResourceType, dir Dir) (arg Arg, calls []*Call) {
-	if r.inCreateResource {
-		return nil, nil
-	}
-	r.inCreateResource = true
-	defer func() { r.inCreateResource = false }()
-
 	kind := res.Desc.Name
 	// We may have no resources, but still be in createResource due to ANYRES.
 	if len(r.target.resourceMap) != 0 && r.oneOf(1000) {
@@ -593,7 +587,7 @@ func (r *randGen) generateArgs(s *state, fields []Field, dir Dir) ([]Arg, []*Cal
 
 	// Generate all args. Size args have the default value 0 for now.
 	for i, field := range fields {
-		arg, calls1 := r.generateArg(s, field.Type, dir)
+		arg, calls1 := r.generateArg(s, field.Type, field.Dir(dir))
 		if arg == nil {
 			panic(fmt.Sprintf("generated arg is nil for field '%v', fields: %+v", field.Type.Name(), fields))
 		}
@@ -659,20 +653,28 @@ func (r *randGen) generateArgImpl(s *state, typ Type, dir Dir, ignoreSpecial boo
 }
 
 func (a *ResourceType) generate(r *randGen, s *state, dir Dir) (arg Arg, calls []*Call) {
-	if r.oneOf(3) {
+	if !r.inGenerateResource {
+		// Don't allow recursion for resourceCentric/createResource.
+		// That can lead to generation of huge programs and may be very slow
+		// (esp. if we are generating some failing attempts in createResource already).
+		r.inGenerateResource = true
+		defer func() { r.inGenerateResource = false }()
+
+		if r.oneOf(4) {
+			arg, calls = r.resourceCentric(s, a, dir)
+			if arg != nil {
+				return
+			}
+		}
+		if r.oneOf(3) {
+			arg, calls = r.createResource(s, a, dir)
+			if arg != nil {
+				return
+			}
+		}
+	}
+	if r.nOutOf(9, 10) {
 		arg = r.existingResource(s, a, dir)
-		if arg != nil {
-			return
-		}
-	}
-	if r.nOutOf(2, 3) {
-		arg, calls = r.resourceCentric(s, a, dir)
-		if arg != nil {
-			return
-		}
-	}
-	if r.nOutOf(4, 5) {
-		arg, calls = r.createResource(s, a, dir)
 		if arg != nil {
 			return
 		}
@@ -784,8 +786,8 @@ func (a *StructType) generate(r *randGen, s *state, dir Dir) (arg Arg, calls []*
 
 func (a *UnionType) generate(r *randGen, s *state, dir Dir) (arg Arg, calls []*Call) {
 	index := r.Intn(len(a.Fields))
-	optType := a.Fields[index].Type
-	opt, calls := r.generateArg(s, optType, dir)
+	optType, optDir := a.Fields[index].Type, a.Fields[index].Dir(dir)
+	opt, calls := r.generateArg(s, optType, optDir)
 	return MakeUnionArg(a, dir, opt, index), calls
 }
 
